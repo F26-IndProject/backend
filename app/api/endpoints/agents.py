@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
-from sqlalchemy import desc
+from sqlalchemy import desc, text
 from typing import List, Optional
 from pydantic import BaseModel
 from typing import Dict, Any
@@ -23,12 +23,10 @@ router = APIRouter()
 @router.post("/agents/generate", response_model=AgentGenerateResponse)
 def generate_agent(config: AgentConfig, db: Session = Depends(get_db)):
     """Generate agent configuration using database models"""
-    # Validate role exists
     role = db.query(Role).filter(Role.id == config.role_id, Role.is_active == True).first()
     if not role:
         raise HTTPException(status_code=404, detail="Role not found")
     
-    # Validate template exists
     template = db.query(BehaviorTemplate).filter(
         BehaviorTemplate.id == config.template_id,
         BehaviorTemplate.is_active == True
@@ -36,18 +34,14 @@ def generate_agent(config: AgentConfig, db: Session = Depends(get_db)):
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
     
-    # Validate OS compatibility
     if template.os_type != config.os_type:
         raise HTTPException(
             status_code=400,
             detail=f"Template OS ({template.os_type}) doesn't match requested OS ({config.os_type})"
         )
     
-    # Generate unique agent ID
-        # Generate unique agent ID
     agent_id = f"USR{str(uuid.uuid4().int)[:7]}"
 
-    # Create agent in database
     db_agent = Agent(
         agent_id=agent_id,
         name=config.name,
@@ -63,7 +57,6 @@ def generate_agent(config: AgentConfig, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(db_agent)
 
-    # Generate agent configuration
     agent_config = {
         "agent_id": agent_id,
         "name": config.name,
@@ -80,20 +73,13 @@ def generate_agent(config: AgentConfig, db: Session = Depends(get_db)):
         "generated_at": datetime.utcnow().isoformat(),
         "version": "1.0",
     }
-    # --- START OF THE AUTOMATION BLOCK ---
-# Create a task file that will be detected by the agent-deployer
     try:
-    # The filename includes the agent_id to ensure it's unique
         task_filename = f"build-{agent_id}.json"
-        task_filepath = os.path.join("/tmp", task_filename) # Правильный путь к общему тому
-
-    # Save the full agent configuration to this file
+        task_filepath = os.path.join("/tmp", task_filename)
         with open(task_filepath, 'w') as f:
             json.dump(agent_config, f, indent=4)
-
     except Exception as e:
         print(f"WARNING: Failed to create deployment task file: {e}")
-# --- END OF THE AUTOMATION BLOCK ---
 
     return AgentGenerateResponse(
         agent_id=agent_id,
@@ -109,14 +95,10 @@ def trigger_deployment(
     deployment_info: DeploymentRequest,
     db: Session = Depends(get_db)
 ):
-    """
-    Creates a deployment task file for the agent-deployer service to pick up.
-    """
     agent = db.query(Agent).filter(Agent.agent_id == agent_id).first()
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
 
-    # Prepare the configuration data for the deployer
     deployment_task = {
         "agent_id": agent.agent_id,
         "server_ip": deployment_info.server_ip,
@@ -131,11 +113,9 @@ def trigger_deployment(
         }
     }
 
-    # Ensure the shared directory exists
     if not os.path.exists(SHARED_CONFIG_DIR):
         os.makedirs(SHARED_CONFIG_DIR)
 
-    # Create a unique filename for the task
     task_filename = f"deploy_task_{uuid.uuid4()}.json"
     task_filepath = os.path.join(SHARED_CONFIG_DIR, task_filename)
 
@@ -145,7 +125,6 @@ def trigger_deployment(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to create deployment task file: {e}")
         
-    # Update agent status in DB
     agent.status = "deploying"
     agent.injection_target = deployment_info.server_ip
     db.commit()
@@ -154,17 +133,15 @@ def trigger_deployment(
         "status": "deployment_task_created",
         "agent_id": agent_id,
         "task_file": task_filename,
-        "message": "Deployment task has been submitted. The agent-deployer service will process it shortly."
+        "message": "Deployment task has been submitted."
     }
 
 @router.get("/agents/{agent_id}/config/download")
 def download_agent_config(agent_id: str, db: Session = Depends(get_db)):
-    """Download agent configuration file"""
     agent = db.query(Agent).filter(Agent.agent_id == agent_id).first()
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
     
-    # Build complete config
     config = {
         "agent_id": agent.agent_id,
         "name": agent.name,
@@ -177,13 +154,12 @@ def download_agent_config(agent_id: str, db: Session = Depends(get_db)):
         "behavior_template": agent.template.template_data if agent.template else {},
         "injection_target": agent.injection_target,
         "custom_config": agent.config or {},
-        "server_url": "http://localhost:8000",  # LISA backend URL
-        "heartbeat_interval": 86400,  # 24 hours
+        "server_url": "http://localhost:8000",
+        "heartbeat_interval": 86400,
         "created_at": agent.created_at.isoformat(),
         "version": "1.0"
     }
     
-    # Create temporary file
     content = json.dumps(config, indent=2)
     filename = f"{agent_id}_config.json"
     
@@ -207,27 +183,22 @@ def list_agents(
     limit: int = 100,
     db: Session = Depends(get_db)
 ):
-    """Get list of agents with filtering"""
     query = db.query(Agent)
-    
     if status:
         query = query.filter(Agent.status == status)
     if os_type:
         query = query.filter(Agent.os_type == os_type)
     if role_id:
         query = query.filter(Agent.role_id == role_id)
-    
     agents = query.order_by(desc(Agent.created_at)).offset(skip).limit(limit).all()
     return agents
 
 @router.get("/agents/{agent_id}/status")
 def get_agent_status(agent_id: str, db: Session = Depends(get_db)):
-    """Get agent status and recent activities"""
     agent = db.query(Agent).filter(Agent.agent_id == agent_id).first()
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
     
-    # Get recent activities (heartbeats, etc.)
     recent_activities = db.query(AgentActivity).filter(
         AgentActivity.agent_id == agent.id
     ).order_by(desc(AgentActivity.timestamp)).limit(10).all()
@@ -254,35 +225,186 @@ def get_agent_status(agent_id: str, db: Session = Depends(get_db)):
         ]
     }
 
-# SIMPLE DEPLOYMENT (Future enhancement)
-@router.post("/agents/{agent_id}/deploy")
-def deploy_agent_simple(agent_id: str, deployment_info: dict, db: Session = Depends(get_db)):
-    """Simple agent deployment (placeholder for future)"""
+
+class AgentRoleUpdate(BaseModel):
+    agent_role: str
+
+@router.patch("/agents/{agent_id}/role")
+def update_agent_role(agent_id: str, role_update: AgentRoleUpdate, db: Session = Depends(get_db)):
     agent = db.query(Agent).filter(Agent.agent_id == agent_id).first()
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
-    
-    # Update agent status
-    agent.status = "deploying"
-    agent.injection_target = deployment_info.get("target_host", "localhost")
-    db.commit()
-    
-    # Log deployment attempt
-    activity = AgentActivity(
-        agent_id=agent.id,
-        activity_type="deployment_initiated",
-        activity_data={
-            "target_host": deployment_info.get("target_host", "localhost"),
-            "deployment_method": deployment_info.get("method", "manual"),
-            "timestamp": datetime.utcnow().isoformat()
-        }
+
+    db.execute(
+        text("UPDATE agents SET agent_role = :role WHERE agent_id = :agent_id"),
+        {"role": role_update.agent_role, "agent_id": agent_id}
     )
-    db.add(activity)
     db.commit()
-    
+
     return {
-        "status": "deployment_initiated",
+        "status": "updated",
         "agent_id": agent_id,
-        "target_host": deployment_info.get("target_host", "localhost"),
-        "message": "Deployment process started. Use config download URL to get agent configuration."
+        "agent_role": role_update.agent_role,
+        "message": "Agent will switch role within 5 minutes"
     }
+
+
+class AgentScheduleUpdate(BaseModel):
+    schedule_id: Optional[int] = None
+
+@router.patch("/agents/{agent_id}/schedule")
+def update_agent_schedule(agent_id: str, body: AgentScheduleUpdate, db: Session = Depends(get_db)):
+    """Assign or remove a work schedule for a specific agent."""
+    agent = db.query(Agent).filter(Agent.agent_id == agent_id).first()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    if body.schedule_id is not None:
+        exists = db.execute(
+            text("SELECT id FROM agent_schedules WHERE id = :id"),
+            {"id": body.schedule_id}
+        ).fetchone()
+        if not exists:
+            raise HTTPException(status_code=404, detail="Schedule not found")
+
+    db.execute(
+        text("UPDATE agents SET agent_schedule_id = :sid WHERE agent_id = :aid"),
+        {"sid": body.schedule_id, "aid": agent_id}
+    )
+    db.commit()
+
+    return {
+        "status": "updated",
+        "agent_id": agent_id,
+        "schedule_id": body.schedule_id,
+        "message": "Agent will use new schedule within 5 minutes"
+    }
+
+
+class AgentBreakUpdate(BaseModel):
+    break_id: Optional[int] = None
+
+@router.patch("/agents/{agent_id}/break")
+def update_agent_break(agent_id: str, body: AgentBreakUpdate, db: Session = Depends(get_db)):
+    """Assign or remove a break time for a specific agent."""
+    agent = db.query(Agent).filter(Agent.agent_id == agent_id).first()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    if body.break_id is not None:
+        exists = db.execute(
+            text("SELECT id FROM break_times WHERE id = :id"),
+            {"id": body.break_id}
+        ).fetchone()
+        if not exists:
+            raise HTTPException(status_code=404, detail="Break time not found")
+
+    db.execute(
+        text("UPDATE agents SET agent_break_id = :bid WHERE agent_id = :aid"),
+        {"bid": body.break_id, "aid": agent_id}
+    )
+    db.commit()
+
+    return {
+        "status": "updated",
+        "agent_id": agent_id,
+        "break_id": body.break_id,
+        "message": "Agent will use new break time within 5 minutes"
+    }
+
+
+@router.get("/agents/{agent_id}/activities")
+def get_agent_activities(
+    agent_id: str,
+    limit: int = 20,
+    db: Session = Depends(get_db)
+):
+    agent = db.query(Agent).filter(Agent.agent_id == agent_id).first()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    activities = db.query(AgentActivity).filter(
+        AgentActivity.agent_id == agent.id
+    ).order_by(desc(AgentActivity.timestamp)).limit(limit).all()
+
+    result = db.execute(
+        text("SELECT agent_role FROM agents WHERE agent_id = :agent_id"),
+        {"agent_id": agent_id}
+    ).fetchone()
+    agent_role = result[0] if result and result[0] else "user"
+
+    # Get assigned schedule if any
+    sched = db.execute(
+        text("""
+            SELECT s.id, s.name, s.work_start, s.work_end, s.work_days
+            FROM agents a
+            LEFT JOIN agent_schedules s ON s.id = a.agent_schedule_id
+            WHERE a.agent_id = :agent_id
+        """),
+        {"agent_id": agent_id}
+    ).fetchone()
+
+    schedule_info = None
+    if sched and sched[0]:
+        days = sched[4]
+        schedule_info = {
+            "id":         sched[0],
+            "name":       sched[1],
+            "work_start": sched[2],
+            "work_end":   sched[3],
+            "work_days":  json.loads(days) if isinstance(days, str) else days
+        }
+
+    # Get assigned break time if any
+    brk = db.execute(
+        text("""
+            SELECT b.id, b.name, b.break_start, b.break_end
+            FROM agents a
+            LEFT JOIN break_times b ON b.id = a.agent_break_id
+            WHERE a.agent_id = :agent_id
+        """),
+        {"agent_id": agent_id}
+    ).fetchone()
+
+    break_info = None
+    if brk and brk[0]:
+        break_info = {
+            "id":          brk[0],
+            "name":        brk[1],
+            "break_start": brk[2],
+            "break_end":   brk[3]
+        }
+
+    return {
+        "agent_id":      agent.agent_id,
+        "name":          agent.name,
+        "status":        agent.status,
+        "os_type":       agent.os_type,
+        "agent_role":    agent_role,
+        "schedule":      schedule_info,
+        "break_time":    break_info,
+        "last_seen":     agent.last_seen,
+        "last_activity": agent.last_activity,
+        "created_at":    agent.created_at,
+        "activities": [
+            {
+                "activity_type": a.activity_type,
+                "timestamp":     a.timestamp.isoformat() if a.timestamp else None,
+                "activity_data": a.activity_data
+            }
+            for a in activities
+        ]
+    }
+
+
+@router.delete("/agents/{agent_id}")
+def delete_agent(agent_id: str, db: Session = Depends(get_db)):
+    agent = db.query(Agent).filter(Agent.agent_id == agent_id).first()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    db.query(AgentActivity).filter(AgentActivity.agent_id == agent.id).delete()
+    db.delete(agent)
+    db.commit()
+
+    return {"message": f"Agent '{agent.name}' deleted", "agent_id": agent_id}

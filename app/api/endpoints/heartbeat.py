@@ -1,7 +1,7 @@
 # app/api/endpoints/heartbeat.py
-from fastapi import APIRouter, Depends, HTTPException, Header
+from fastapi import APIRouter, Depends, HTTPException, Header, Request, Request
 from sqlalchemy.orm import Session
-from sqlalchemy import desc
+from sqlalchemy import desc, text
 from typing import Optional, Dict, List
 from datetime import datetime, timedelta
 import logging
@@ -27,6 +27,7 @@ def verify_api_key(authorization: Optional[str] = Header(None)):
 
 @router.post("/agents/heartbeat", response_model=AgentHeartbeatResponse)
 def receive_agent_heartbeat(
+    request: Request,
     heartbeat_data: Dict,
     db: Session = Depends(get_db),
     api_key_valid: Optional[bool] = Depends(verify_api_key)
@@ -73,6 +74,10 @@ def receive_agent_heartbeat(
         db.commit()
         db.refresh(agent)
     
+    # Store client IP so frontend can auto-fill RDP target
+    agent.injection_target = request.client.host
+
+    agent.injection_target = request.client.host
     # Обновляем статус агента
     agent.status = heartbeat_data.get('status', 'active')
     agent.last_seen = datetime.utcnow()
@@ -175,7 +180,8 @@ def get_active_agents(
                 "name": agent.name,
                 "last_seen": agent.last_seen.isoformat() if agent.last_seen else None,
                 "last_activity": agent.last_activity,
-                "role": agent.config.get('role') if agent.config else None
+                "ip": agent.injection_target,
+                "role": db.execute(text("SELECT agent_role FROM agents WHERE id = :id"), {"id": agent.id}).scalar() or (agent.config.get("role") if agent.config else "user")
             } for agent in active_agents
         ]
     }
