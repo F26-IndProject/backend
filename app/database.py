@@ -8,7 +8,6 @@ import sys
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
 # Для docker-compose 
-# DATABASE_URL = 'postgresql://lisa:pass@lisa_postgres_quick:5432/lisa_dev'
 
 print(f'Database URL: {DATABASE_URL}')
 

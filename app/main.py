@@ -11,8 +11,6 @@ from app.api import websocket
 from app.api.endpoints import roles, templates, agents, builds, system, heartbeat, applications, servers, role_definitions
 from app.api.endpoints import schedules
 
-# Create tables
-Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
     title="LISA Backend API",
